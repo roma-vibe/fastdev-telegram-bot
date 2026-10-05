@@ -1,0 +1,19 @@
+# Keep the build context small and never ship local secrets or data.
+.venv
+**/__pycache__
+.mypy_cache
+.pytest_cache
+.ruff_cache
+data
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.vscode
+.idea
+*.log
+.DS_Store
+Dockerfile
+docker-compose.yml
+.dockerignore

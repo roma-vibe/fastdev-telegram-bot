@@ -1,0 +1,142 @@
+# {{ project.name }}
+
+A Telegram bot written in Python with [aiogram 3](https://docs.aiogram.dev) and SQLite. It comes with a local **playground** — a chat page in the browser that talks to the bot without Telegram — and an example feature: personal notes (`/add`, `/notes`, delete with inline buttons).
+
+## Requirements
+
+{% if choices.docker == "full" -%}
+- Docker 24 or newer with Docker Compose. Everything runs in containers; Python and uv are not needed on this machine.
+{% else -%}
+- [uv](https://docs.astral.sh/uv/) 0.9 or newer (`curl -LsSf https://astral.sh/uv/install.sh | sh`). uv installs Python 3.14 by itself.
+{% if choices.docker == "run" -%}
+- Docker 24 or newer with Docker Compose (only for running in a container)
+{% endif -%}
+{% endif -%}
+- A bot token from [@BotFather](https://t.me/BotFather) to talk to the bot in Telegram (the playground works without one).
+
+## Quick start
+
+```sh
+[ -f .env ] || cp .env.example .env   # first run after cloning
+{%- if choices.docker == "full" %}
+docker compose run --rm dev uv sync
+docker compose up dev
+{%- else %}
+uv sync
+uv run poe dev
+{%- endif %}
+```
+
+Open http://localhost:{{ ports.PLAYGROUND_PORT }} and chat with the bot: `/start`, `/add Buy milk`, `/notes`. Messages in the playground never reach Telegram; the bot uses the same handlers and database as in production.
+
+To talk to the bot in Telegram:
+
+1. Open [@BotFather](https://t.me/BotFather), send `/newbot` and copy the token.
+2. Put it into `.env`: `BOT_TOKEN=123456789:AA…`. The dev process restarts by itself and starts long polling.
+3. Open your bot in Telegram and send `/start`.
+
+Use a separate bot for development and production: two processes cannot poll the same token, and polling removes the bot's webhook.
+
+## Running in production
+
+{%- if choices.docker == "full" %}
+
+```sh
+docker compose up --build app   # the bot + /health on http://localhost:{{ ports.APP_PORT }}/health
+```
+{%- else %}
+
+```sh
+uv sync --no-dev
+uv run poe start           # the bot + /health on http://localhost:{{ ports.APP_PORT }}/health
+```
+{%- endif %}
+
+`BOT_MODE` in `.env` selects how Telegram delivers updates (currently `{{ env.BOT_MODE }}`):
+
+- **`polling`** — the bot fetches updates itself. Works on any machine with outgoing internet access; no domain or open ports. Run exactly one instance.
+- **`webhook`** — Telegram posts updates to `WEBHOOK_BASE_URL` + `WEBHOOK_PATH` (e.g. `https://bot.example.com/telegram/webhook`). Put a reverse proxy with TLS (Caddy, nginx, a tunnel) in front of `APP_PORT`; Telegram accepts ports 443, 80, 88 and 8443 only. The bot registers the webhook with `WEBHOOK_SECRET` on start and rejects requests without it.
+
+`GET /health` on `APP_PORT` answers `{"status": "ok", "app": "…", "mode": "…"}` in both modes.
+
+## Tasks
+
+Tasks are defined in `pyproject.toml` and run with `uv run poe <task>` (`uv run poe` lists them).
+{%- if choices.docker == "full" %} In this project run them in the dev container: `docker compose run --rm dev uv run poe <task>` (`dev` → `docker compose up dev`).{% endif %}
+
+| Command                   | What it does                                                                    |
+| ------------------------- | ------------------------------------------------------------------------------- |
+| `uv run poe dev`          | Playground + long polling (when `BOT_TOKEN` is set), restarting on file changes |
+| `uv run poe start`        | Run the bot like in production (`BOT_MODE`), `/health` on `APP_PORT`            |
+| `uv run poe test`         | Run the tests (pytest); extra arguments go to pytest                            |
+| `uv run poe check`        | Lint, format check, type check and tests — the quality gate before commits      |
+| `uv run poe fix`          | Fix lint problems automatically and format the code (Ruff)                      |
+| `uv run poe lint`         | Ruff lint only                                                                  |
+| `uv run poe typecheck`    | mypy (strict) only                                                              |
+| `uv run poe migrate`      | Apply pending database migrations (also done on start)                          |
+
+## Configuration
+
+All settings live in `.env` in the project root. It is git-ignored; `.env.example` documents every key and is committed. Environment variables override `.env`.
+
+| Key | Value | Description |
+| --- | --- | --- |
+| `APP_NAME` | `{{ env.APP_NAME }}` | Bot name used in replies, logs, `/health` and the playground |
+| `APP_SLUG` | `{{ env.APP_SLUG }}` | Machine-friendly name |
+| `BOT_TOKEN` | — | Token from @BotFather; keep it secret |
+| `TELEGRAM_API_URL` | empty | Self-hosted Bot API server; empty uses `https://api.telegram.org` |
+| `BOT_MODE` | `{{ env.BOT_MODE }}` | `polling` or `webhook` for `start` and the container (`dev` always polls) |
+| `APP_HOST` | `localhost` | Interface of the HTTP server (`0.0.0.0` for all interfaces) |
+| `APP_PORT` | `{{ ports.APP_PORT }}` | HTTP server: `/health` and the webhook endpoint |
+| `WEBHOOK_BASE_URL` | empty | Public `https://` address that forwards to `APP_PORT` (webhook mode) |
+| `WEBHOOK_PATH` | `/telegram/webhook` | Path Telegram posts updates to |
+| `WEBHOOK_SECRET` | generated | Secret Telegram sends with every webhook request |
+| `PLAYGROUND_HOST` | `localhost` | Interface of the playground |
+| `PLAYGROUND_PORT` | `{{ ports.PLAYGROUND_PORT }}` | Playground page (`dev` only) |
+| `DB_PATH` | `{{ env.DB_PATH }}` | SQLite file, relative to the project root |
+| `LOG_LEVEL` | `INFO` | `CRITICAL`, `ERROR`, `WARNING`, `INFO` or `DEBUG` |
+{%- if choices.docker != "none" %}
+| `COMPOSE_PROJECT_NAME` | `{{ project.slug }}` | Docker Compose project name |
+| `DOCKER_DATA` | `{{ env.DOCKER_DATA }}` | Where containers keep the database: `data` (Docker volume) or `./data` (project folder) |
+{%- endif %}
+
+## Project structure
+
+```text
+app/
+  bot.py            Wiring: bot client, dispatcher, services, routers, command menu
+  features/         One folder per feature: handlers, texts, keyboards, states, service, repository
+  db/               SQLite connection and SQL migrations
+  playground/       Local chat page for development and tests
+  runner.py         Production run (polling / webhook); dev.py — development run
+tests/              pytest: services, conversations through the dispatcher, HTTP
+data/               SQLite database files (git-ignored)
+```
+
+The example feature **Notes** shows every layer end to end: SQL migration → repository → service → handler → texts and keyboards, with tests for the service and the conversation.
+{% if choices.docker != "none" %}
+## Docker
+{% if choices.docker == "full" %}
+Everything runs in containers. The `dev` service mounts this folder and keeps the virtual environment in a Docker volume:
+
+```sh
+docker compose run --rm dev uv sync                # after cloning or changing dependencies
+docker compose up dev                              # playground + polling, restarting on changes
+docker compose run --rm dev uv run poe check       # any task
+docker compose up --build app                      # production container, /health on http://localhost:{{ ports.APP_PORT }}/health
+docker compose build app                           # only build the production image
+docker compose --profile dev down                  # stop everything; add -v to also delete the volumes
+```
+{% else %}
+```sh
+docker compose up --build   # build the image and run the bot; /health on http://localhost:{{ ports.APP_PORT }}/health
+docker compose logs -f      # follow the logs
+docker compose down         # stop; add -v to also delete the database volume
+docker compose build app    # only build the production image
+```
+{% endif %}
+The image (`python:3.14-slim`) contains the locked production dependencies and `app/`, runs `python -m app run` as a non-root user and restarts unless stopped. Compose passes `.env` to the container. The SQLite database is stored {% if choices.data == "local" %}in the project's `data/` folder (`DOCKER_DATA=./data`){% else %}in the Docker volume `data` (`DOCKER_DATA=data`){% endif %}; change `DOCKER_DATA` in `.env` to switch.
+{% endif %}
+## Contributing
+
+Run `{% if choices.docker == "full" %}docker compose run --rm dev {% endif %}uv run poe check` before every commit. It must pass without errors or warnings.

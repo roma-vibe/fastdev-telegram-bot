@@ -1,0 +1,260 @@
+# Manifest reference: docs/manifest.md of the fastDev repository.
+schema = 1
+id = "telegram-bot"
+name = "Telegram Bot"
+description = "Telegram bot in Python on aiogram 3 with SQLite, long polling in development and polling or a webhook in production. It ships a notes example that goes through handlers, services, repositories and SQL migrations, a browser playground to chat with the bot locally without a token, pytest tests, Ruff and strict mypy. Choose it for chat, helper and notification bots that keep their own data; Docker can run everything, so only Docker or uv is needed on the Mac."
+category = "other"
+languages = ["python"]
+tags = [
+  "telegram",
+  "bot",
+  "chatbot",
+  "aiogram",
+  "python",
+  "sqlite",
+  "webhook",
+  "polling",
+  "asyncio",
+  "uv",
+]
+stack = [
+  "Python 3.14",
+  "aiogram 3",
+  "aiohttp 3",
+  "SQLite (aiosqlite 0.22)",
+  "pydantic-settings 2",
+  "uv 0.12",
+  "Poe the Poet 0.48",
+  "pytest 9 + pytest-asyncio 1",
+  "Ruff 0.16",
+  "mypy 2 (strict)",
+]
+
+# uv installs Python 3.14 by itself (see .python-version); no system Python is needed.
+[requirements]
+uv = ">=0.9"
+
+[env]
+APP_NAME = "{{ project.name }}"
+APP_SLUG = "{{ project.slug }}"
+DB_PATH = "data/{{ project.slug }}.sqlite"
+
+[ports]
+APP_PORT = 8080          # the bot's HTTP server: /health and the webhook endpoint
+PLAYGROUND_PORT = 8090   # the local chat page of `dev`
+
+[secrets]
+WEBHOOK_SECRET = 32      # checked on every webhook request (64 hex characters)
+
+# The distribution name in pyproject.toml and its entry in uv.lock, so `uv sync --locked` passes.
+[[set]]
+file = "pyproject.toml"
+path = ["project", "name"]
+value = "{{ project.slug }}"
+
+[[set]]
+file = "uv.lock"
+path = ["package[name=app]", "name"]
+value = "{{ project.slug }}"
+
+[[setup]]
+label = "Install dependencies"
+run = "uv sync --locked"
+
+[commands.dev]
+label = "Dev"
+description = "Playground on PLAYGROUND_PORT plus long polling when BOT_TOKEN is set; restarts on changes to app/ and .env."
+run = "uv run poe dev"
+long = true
+url = "http://localhost:${PLAYGROUND_PORT}"
+primary = true
+
+[commands.start]
+label = "Start"
+description = "Runs the bot like in production (BOT_MODE: polling or webhook) with /health on APP_PORT. Needs BOT_TOKEN."
+run = "uv run poe start"
+long = true
+url = "http://localhost:${APP_PORT}/health"
+
+[commands.test]
+label = "Test"
+run = "uv run poe test"
+
+[commands.check]
+label = "Check"
+description = "Ruff lint, Ruff format check, mypy (strict) and pytest."
+run = "uv run poe check"
+
+[commands.lint]
+label = "Lint"
+run = "uv run poe lint"
+
+[commands.format]
+label = "Fix and format"
+description = "Applies Ruff's automatic fixes and formats all Python files."
+run = "uv run poe fix"
+
+[commands.db-migrate]
+label = "Migrate DB"
+run = "uv run poe migrate"
+
+# ---------------------------------------------------------------------------
+# How the running bot receives updates. Only BOT_MODE in .env differs; both modes are in the code.
+# ---------------------------------------------------------------------------
+
+[choices.mode]
+label = "Receiving updates"
+description = "How the running bot (Start, the Docker container) gets messages from Telegram. Development always uses long polling. Change it later with BOT_MODE in .env."
+default = "polling"
+
+[choices.mode.options.polling]
+label = "Long polling"
+description = "The bot asks Telegram for new messages itself. Works anywhere, even behind NAT: no domain, HTTPS or open port needed. Run one instance per token."
+env = { BOT_MODE = "polling" }
+
+[choices.mode.options.webhook]
+label = "Webhook"
+description = "Telegram posts updates to a public HTTPS address (WEBHOOK_BASE_URL) that must forward to APP_PORT, e.g. a reverse proxy with TLS. Needs a domain or tunnel; no idle requests, suits servers behind a load balancer."
+env = { BOT_MODE = "webhook" }
+
+# ---------------------------------------------------------------------------
+# Docker: how the project uses containers. The option replaces or adds commands.
+# ---------------------------------------------------------------------------
+
+[choices.docker]
+label = "Docker"
+description = "How the project uses Docker. The bot, its tests and the playground all run on Linux, so every mode is complete."
+default = "full"
+
+[choices.docker.options.none]
+label = "No Docker"
+description = "Everything runs on this Mac with uv (it installs Python 3.14 by itself). No Docker files; deploy with `uv sync --no-dev` and `uv run poe start`."
+
+[choices.docker.options.run]
+label = "Docker to run the app"
+description = "Develop on this Mac with uv; Docker Compose builds and runs the bot's production container (python:3.14-slim, non-root) with the database in a volume or the data/ folder."
+files = ["Dockerfile", "docker-compose.yml", ".dockerignore"]
+requirements = { docker = ">=24" }
+env = { COMPOSE_PROJECT_NAME = "{{ project.slug }}" }
+# Removes what verification (docker-build) or Docker up created: containers, volumes, local images.
+cleanup = "docker compose down --volumes --remove-orphans --rmi local"
+
+[choices.docker.options.run.commands.docker-up]
+label = "Docker up"
+run = "docker compose up --build"
+long = true
+url = "http://localhost:${APP_PORT}/health"
+
+[choices.docker.options.run.commands.docker-down]
+label = "Docker down"
+run = "docker compose down"
+
+[choices.docker.options.run.commands.docker-logs]
+label = "Docker logs"
+run = "docker compose logs -f"
+long = true
+
+[choices.docker.options.run.commands.docker-build]
+label = "Docker build"
+run = "docker compose build app"
+description = "Builds the production image without starting it."
+
+[choices.docker.options.full]
+label = "Everything in Docker"
+description = "Dependencies, dev mode with the playground, tests, checks and the production container all run in Docker; only Docker is needed on this Mac. Setup also builds the production image."
+files = ["Dockerfile", "docker-compose.yml", ".dockerignore"]
+requirements = { docker = ">=24" }
+drop_requirements = ["uv"]
+env = { COMPOSE_PROJECT_NAME = "{{ project.slug }}" }
+setup = [
+  { label = "Install dependencies", run = "docker compose run --rm dev uv sync --locked" },
+  { label = "Build the production image", run = "docker compose build app" },
+]
+cleanup = "docker compose --profile dev down --volumes --remove-orphans --rmi local"
+
+[choices.docker.options.full.commands]
+dev = { run = "docker compose up dev" }
+start = { label = "Start (container)", run = "docker compose up --build app" }
+test = { run = "docker compose run --rm dev uv run poe test" }
+check = { run = "docker compose run --rm dev uv run poe check" }
+lint = { run = "docker compose run --rm dev uv run poe lint" }
+format = { run = "docker compose run --rm dev uv run poe fix" }
+db-migrate = { run = "docker compose run --rm dev uv run poe migrate" }
+docker-down = { label = "Docker down", run = "docker compose --profile dev down" }
+docker-logs = { label = "Docker logs", run = "docker compose --profile dev logs -f", long = true }
+docker-build = { label = "Docker build", run = "docker compose build app", description = "Builds the production image without starting it." }
+
+# Where containers keep the SQLite database (only when Docker is used).
+[choices.data]
+label = "Data storage"
+description = "Where containers keep the SQLite database (DOCKER_DATA in .env; switch later by editing it)."
+default = "volume"
+when = { docker = ["run", "full"] }
+
+[choices.data.options.volume]
+label = "Docker volume"
+description = "Managed by Docker, survives container rebuilds; `docker compose down -v` deletes it."
+env = { DOCKER_DATA = "data" }
+
+[choices.data.options.local]
+label = "Project folder"
+description = "The data/ folder of the project is mounted into containers; easy to inspect with sqlite3 and to back up."
+env = { DOCKER_DATA = "./data" }
+
+# docker-build exists only with Docker; the "none" variant skips it.
+[verify]
+commands = ["check", "docker-build"]
+variants = [
+  { docker = "full", data = "local", mode = "webhook" },
+  { docker = "run", mode = "webhook" },
+  { docker = "none" },
+]
+
+# Try the skeleton without creating a project (fastDev "Preview").
+[preview]
+command = "dev"
+message = "The bot's local playground is running. Open the link and chat with the bot as you would in Telegram: tap /start, send /add Buy milk, then /notes, and delete a note with its ✕ button. Nothing reaches Telegram here; to talk to the real bot, create a project, put a token from @BotFather into BOT_TOKEN in .env and run Dev. Stop the preview when you are done."
+
+[translations.ru]
+"Telegram Bot" = "Telegram-бот"
+"Telegram bot in Python on aiogram 3 with SQLite, long polling in development and polling or a webhook in production. It ships a notes example that goes through handlers, services, repositories and SQL migrations, a browser playground to chat with the bot locally without a token, pytest tests, Ruff and strict mypy. Choose it for chat, helper and notification bots that keep their own data; Docker can run everything, so only Docker or uv is needed on the Mac." = "Telegram-бот на Python и aiogram 3 с SQLite: long polling при разработке, polling или вебхук в продакшене. Внутри пример заметок через обработчики, сервисы, репозитории и SQL-миграции, песочница в браузере, чтобы общаться с ботом локально без токена, тесты pytest, Ruff и строгий mypy. Подходит для чат-ботов, ботов-помощников и уведомлений со своими данными; Docker может запускать всё, поэтому на Mac нужен только Docker или uv."
+"Receiving updates" = "Получение обновлений"
+"How the running bot (Start, the Docker container) gets messages from Telegram. Development always uses long polling. Change it later with BOT_MODE in .env." = "Как работающий бот (Старт, контейнер Docker) получает сообщения от Telegram. При разработке всегда используется long polling. Позже можно изменить через BOT_MODE в .env."
+"Long polling" = "Long polling"
+"The bot asks Telegram for new messages itself. Works anywhere, even behind NAT: no domain, HTTPS or open port needed. Run one instance per token." = "Бот сам запрашивает у Telegram новые сообщения. Работает где угодно, даже за NAT: не нужны ни домен, ни HTTPS, ни открытый порт. Запускайте один экземпляр на токен."
+"Webhook" = "Вебхук"
+"Telegram posts updates to a public HTTPS address (WEBHOOK_BASE_URL) that must forward to APP_PORT, e.g. a reverse proxy with TLS. Needs a domain or tunnel; no idle requests, suits servers behind a load balancer." = "Telegram отправляет обновления на публичный HTTPS-адрес (WEBHOOK_BASE_URL), который должен перенаправлять на APP_PORT, например через обратный прокси с TLS. Нужен домен или туннель; нет холостых запросов, подходит для серверов за балансировщиком."
+"Docker" = "Docker"
+"How the project uses Docker. The bot, its tests and the playground all run on Linux, so every mode is complete." = "Как проект использует Docker. Бот, его тесты и песочница работают и в Linux, поэтому каждый режим полноценный."
+"No Docker" = "Без Docker"
+"Everything runs on this Mac with uv (it installs Python 3.14 by itself). No Docker files; deploy with `uv sync --no-dev` and `uv run poe start`." = "Всё работает на этом Mac с uv (он сам устанавливает Python 3.14). Файлов Docker нет; развёртывание через `uv sync --no-dev` и `uv run poe start`."
+"Docker to run the app" = "Docker для запуска"
+"Develop on this Mac with uv; Docker Compose builds and runs the bot's production container (python:3.14-slim, non-root) with the database in a volume or the data/ folder." = "Разработка на этом Mac с uv; Docker Compose собирает и запускает продакшен-контейнер бота (python:3.14-slim, не root) с базой в томе или в папке data/."
+"Docker up" = "Docker: запуск"
+"Docker down" = "Docker: остановка"
+"Docker logs" = "Docker: логи"
+"Docker build" = "Docker: сборка"
+"Builds the production image without starting it." = "Собирает продакшен-образ, не запуская его."
+"Everything in Docker" = "Всё в Docker"
+"Dependencies, dev mode with the playground, tests, checks and the production container all run in Docker; only Docker is needed on this Mac. Setup also builds the production image." = "Зависимости, режим разработки с песочницей, тесты, проверки и продакшен-контейнер работают в Docker; на этом Mac нужен только Docker. Установка также собирает продакшен-образ."
+"Start (container)" = "Старт (контейнер)"
+"Install dependencies" = "Установка зависимостей"
+"Build the production image" = "Сборка продакшен-образа"
+"Data storage" = "Хранение данных"
+"Where containers keep the SQLite database (DOCKER_DATA in .env; switch later by editing it)." = "Где контейнеры хранят базу SQLite (DOCKER_DATA в .env; позже можно поменять там же)."
+"Docker volume" = "Том Docker"
+"Managed by Docker, survives container rebuilds; `docker compose down -v` deletes it." = "Управляется Docker и переживает пересборку контейнеров; `docker compose down -v` удаляет его."
+"Project folder" = "Папка проекта"
+"The data/ folder of the project is mounted into containers; easy to inspect with sqlite3 and to back up." = "Папка data/ проекта монтируется в контейнеры: базу легко посмотреть через sqlite3 и скопировать."
+"Dev" = "Dev"
+"Playground on PLAYGROUND_PORT plus long polling when BOT_TOKEN is set; restarts on changes to app/ and .env." = "Песочница на PLAYGROUND_PORT и long polling, если задан BOT_TOKEN; перезапускается при изменениях в app/ и .env."
+"Start" = "Старт"
+"Runs the bot like in production (BOT_MODE: polling or webhook) with /health on APP_PORT. Needs BOT_TOKEN." = "Запускает бота как в продакшене (BOT_MODE: polling или webhook) с /health на APP_PORT. Нужен BOT_TOKEN."
+"Test" = "Тесты"
+"Check" = "Проверка"
+"Ruff lint, Ruff format check, mypy (strict) and pytest." = "Линтер Ruff, проверка форматирования Ruff, mypy (strict) и pytest."
+"Lint" = "Линтер"
+"Fix and format" = "Исправить и отформатировать"
+"Applies Ruff's automatic fixes and formats all Python files." = "Применяет автоисправления Ruff и форматирует все файлы Python."
+"Migrate DB" = "Миграции БД"
+"The bot's local playground is running. Open the link and chat with the bot as you would in Telegram: tap /start, send /add Buy milk, then /notes, and delete a note with its ✕ button. Nothing reaches Telegram here; to talk to the real bot, create a project, put a token from @BotFather into BOT_TOKEN in .env and run Dev. Stop the preview when you are done." = "Локальная песочница бота запущена. Откройте ссылку и общайтесь с ботом как в Telegram: нажмите /start, отправьте /add Buy milk, затем /notes и удалите заметку кнопкой ✕. Здесь ничего не уходит в Telegram; чтобы поговорить с настоящим ботом, создайте проект, впишите токен от @BotFather в BOT_TOKEN в .env и запустите Dev. Когда закончите, остановите превью."

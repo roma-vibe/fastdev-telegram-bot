@@ -1,0 +1,215 @@
+# {{ project.name }} — agent guide
+
+Rules and workflows for AI coding agents working in this repository. Humans start with `README.md`.
+{%- if options.spec_md %}
+
+**Read `SPEC.md` first.** It defines what this bot must do. If it is incomplete, complete it with the owner before building features, and keep it current as decisions are made.
+{%- endif %}
+
+## Stack
+
+- **Runtime:** Python 3.14 (`.python-version`), managed by [uv](https://docs.astral.sh/uv/): uv installs Python, creates `.venv` and installs the exact versions from `uv.lock`. Never use `pip install`; use `uv add` / `uv remove`.
+- **Bot:** [aiogram 3](https://docs.aiogram.dev) on asyncio — routers, filters, FSM (conversation states), `CallbackData` for inline buttons. Replies use HTML parse mode by default.
+- **HTTP:** aiohttp (installed with aiogram) serves `GET /health`, the webhook endpoint and the development playground.
+- **Data:** SQLite through `aiosqlite`, plain SQL migrations, no ORM.
+- **Configuration:** `pydantic-settings` reads `.env` into a typed `Settings` object.
+- **Tooling:** [Poe the Poet](https://poethepoet.natn.io) tasks in `pyproject.toml`, Ruff (lint + format), mypy `--strict` with the pydantic plugin, pytest with pytest-asyncio, watchfiles (restarts `dev` on changes).
+
+## Project map
+
+```text
+.env / .env.example              All configuration (single source of truth); .env is git-ignored
+pyproject.toml                   Dependencies, Poe tasks, Ruff / mypy / pytest settings
+uv.lock / .python-version        Locked dependency versions / Python version for uv
+data/                            SQLite files (git-ignored)
+app/
+  __main__.py, cli.py            `python -m app run|dev|migrate`
+  config.py                      Settings from .env; the only module that reads the environment
+  bot.py                         Composition root: create_bot(), create_dispatcher(), BOT_COMMANDS
+  runner.py                      Production: polling or webhook (BOT_MODE), migrations
+  dev.py                         Development: playground + polling, restart on changes
+  web.py                         HTTP server on APP_PORT: /health, webhook route; serve() helper
+  errors.py                      AppError, ValidationError, NotFoundError (messages are user-facing)
+  logs.py                        Logging setup (LOG_LEVEL)
+  db/
+    database.py                  open_database(): aiosqlite connection, pragmas, autocommit
+    migrator.py                  run_migrations(): applies new files, records them in schema_migrations
+    migrations/NNN_name.sql      Plain SQL migrations
+  features/
+    common/                      /start, /help, /cancel, fallback reply, error replies
+      handlers.py, texts.py
+    notes/                       Example feature through every layer
+      handlers.py                Router, COMMANDS and handlers (Telegram layer)
+      texts.py                   Reply texts (HTML, user values quoted)
+      keyboards.py               Inline keyboards and CallbackData
+      states.py                  FSM states of multi-step conversations
+      service.py                 Business rules; raises AppError subclasses
+      repository.py              All SQL of the feature
+      models.py                  Dataclasses returned by the repository
+  playground/
+    chat.py                      PlaygroundChat: feeds updates to the dispatcher, emulates the Bot API
+    session.py                   aiogram session that answers API calls locally
+    server.py                    Playground page + JSON API (dev only)
+    static/index.html            The chat page (plain HTML/JS, no build)
+tests/                           pytest: conftest.py fixtures (db, dispatcher, chat), helpers.py
+```
+
+## Architecture rules
+
+An update always goes through the same layers; each layer talks only to the next one:
+
+```text
+Telegram ─┬─ long polling (dev, BOT_MODE=polling) ─┐
+          └─ webhook POST (BOT_MODE=webhook) ──────┴→ Dispatcher → router → handler → service → repository → SQLite
+                                                                                ↳ texts.py + keyboards.py build the reply
+```
+
+- **Handlers** (`features/<feature>/handlers.py`) read the update (text, command arguments, callback data, FSM state), call a service and answer with `texts` and `keyboards`. No SQL and no business rules. They receive what they need as parameters, by name: `message`, `callback`, `state`, `command`, `callback_data`, `bot`, and the workflow data from `create_dispatcher()` (`settings`, `notes`, …).
+- **Routers** are built by `create_router()` functions, never at import time: a router can belong to one dispatcher only, and tests, the playground and polling create several dispatchers. Every feature exports `COMMANDS` (its entries of the command menu).
+- **Texts** (`texts.py`) hold every user-facing string. Parse mode is HTML: wrap every user-provided value in `html.quote()` (`from aiogram import html`); use `html.bold()` etc. for markup. Telegram messages are limited to 4096 characters.
+- **Keyboards** (`keyboards.py`) build inline keyboards with `InlineKeyboardBuilder`; button payloads are `CallbackData` subclasses (packed into at most 64 bytes, e.g. `note:delete:42`). Handlers filter on them with `NoteCallback.filter(...)`.
+- **States** (`states.py`) are `StatesGroup`s for multi-step conversations. Handlers for a state must not swallow commands (`~F.text.startswith("/")`), and `/cancel` clears any state. FSM data lives in memory (`MemoryStorage`) and is lost on restart.
+- **Services** (`service.py`) hold business rules and limits and raise `ValidationError` / `NotFoundError` with a sentence for the user. No aiogram objects, no SQL.
+- **Repositories** (`repository.py`) hold all SQL of a feature: prepared statements with `?` parameters (never interpolate values), rows mapped to dataclasses from `models.py`.
+- **Wiring** happens only in `app/bot.py`: services go into `Dispatcher(...)` as workflow data; routers are included with `common` first (so `/cancel` beats state handlers) and the fallback router last; `BOT_COMMANDS` collects the features' `COMMANDS` and is sent to Telegram on startup.
+- **Errors:** do not catch exceptions in handlers just to reply. An `AppError` reaches the dispatcher's error handler, which answers the user with its message (an alert for button presses). Any other exception is logged with its traceback and the user gets a generic apology.
+- **Users:** the Telegram user id (`message.from_user.id`, `callback.from_user.id`) identifies the owner of data. Always scope queries by it.
+- **Entry points:** `runner.py` (production), `dev.py` (development) and `web.py` (HTTP) only compose the pieces above; keep features out of them.
+
+## Commands
+{% if choices.docker == "full" %}
+**Everything runs in Docker.** uv and Python are not needed on the host and `uv` must not be run there: the virtual environment lives in a Docker volume and contains Linux builds. Run every command below inside the dev container:
+
+- `uv run poe dev` → `docker compose up dev` (playground on {{ ports.PLAYGROUND_PORT }}, published to the host);
+- any other `uv …` → `docker compose run --rm dev uv …` (e.g. `docker compose run --rm dev uv run poe check`);
+- `uv run poe start` → `docker compose up --build app` (the production image; health on {{ ports.APP_PORT }}).
+{% endif %}
+| Command | Use |
+| --- | --- |
+| `uv run poe dev` | Development: playground on `PLAYGROUND_PORT` ({{ ports.PLAYGROUND_PORT }}) and, when `BOT_TOKEN` is set, long polling; restarts when `app/` or `.env` change |
+| `uv run poe start` | Production run: polling or webhook (`BOT_MODE`), `/health` on `APP_PORT` ({{ ports.APP_PORT }}); needs `BOT_TOKEN` |
+| `uv run poe test` | Tests; one file or test: `uv run poe test tests/test_notes_bot.py -k delete` |
+| `uv run poe check` | **Quality gate:** `ruff check`, `ruff format --check`, `mypy`, `pytest` |
+| `uv run poe fix` | Apply Ruff's automatic fixes and format |
+| `uv run poe lint` / `uv run poe typecheck` | Ruff / mypy alone |
+| `uv run poe migrate` | Apply pending migrations (the bot also applies them on start) |
+| `uv add <pkg>` / `uv add --dev <pkg>` | Add a runtime / development dependency (updates `pyproject.toml` and `uv.lock`) |
+| `uv run poe` | List all tasks |
+
+## Configuration and environment
+
+- One `.env` in the project root; `.env.example` lists every key with a comment and is committed. Never commit `.env`, never print or log `BOT_TOKEN` or `WEBHOOK_SECRET`.
+- The bot's name comes **only** from `APP_NAME` in `.env` (`settings.app_name`): the /start greeting, logs, `/health` and the playground use it. Never hardcode it. The display name in Telegram is set in @BotFather.
+- `app/config.py` is the only module that reads the environment. To add a setting: add the key with a comment to `.env.example` (and `.env`), add a typed field to `Settings` (field `foo_bar` reads `FOO_BAR`; use `SecretStr` for secrets), and pass `settings` (available to every handler) or the value where it is needed. Update the table in `README.md`.
+- Environment variables override `.env`. Paths such as `DB_PATH` are relative to the project root.
+- `.env` is read by dotenv loaders only (pydantic-settings via python-dotenv, Docker Compose): single-quote values with spaces or quotes (`APP_NAME='My "Shop" bot'`) and never parse the file by hand. Values are literal: `app/config.py` turns off python-dotenv's `${VAR}` expansion, so do not reference other keys in `.env`.
+- `uv run poe dev` restarts when `.env` changes; restart `start` yourself.
+
+Keys: `APP_NAME`, `APP_SLUG`, `BOT_TOKEN` (from @BotFather), `TELEGRAM_API_URL` (self-hosted Bot API server; empty = Telegram's), `BOT_MODE` (`polling` | `webhook`, currently `{{ env.BOT_MODE }}`), `APP_HOST` / `APP_PORT` (HTTP server), `WEBHOOK_BASE_URL` / `WEBHOOK_PATH` / `WEBHOOK_SECRET`, `PLAYGROUND_HOST` / `PLAYGROUND_PORT`, `DB_PATH`, `LOG_LEVEL`{% if choices.docker != "none" %}, `COMPOSE_PROJECT_NAME`, `DOCKER_DATA`{% endif %}.
+
+## Telegram specifics
+
+- **Tokens:** one bot per environment. Use a separate bot (second token from @BotFather) for development: polling removes the webhook of its bot, and two pollers on one token conflict.
+- **Development without Telegram:** `dev` always serves the playground — a local chat page with the real dispatcher, services and database, where messages never leave the machine. Without `BOT_TOKEN` it is the only thing that runs.
+- **Update delivery:** `dev` always uses long polling. `start` uses `BOT_MODE`:
+  - `polling` — deletes any webhook, then asks Telegram for updates; run exactly one instance.
+  - `webhook` — serves `WEBHOOK_PATH` on `APP_PORT` and registers `WEBHOOK_BASE_URL + WEBHOOK_PATH` with `WEBHOOK_SECRET` on startup. Telegram only calls public HTTPS URLs on ports 443, 80, 88 or 8443, so put a reverse proxy with TLS (or a tunnel) in front of `APP_PORT`. Requests without the right `X-Telegram-Bot-Api-Secret-Token` header get 401.
+{%- if choices.mode == "webhook" %}
+  This project was created for **webhook** mode: set `WEBHOOK_BASE_URL` before the first `start`.
+{%- endif %}
+- **Allowed updates** are computed from the registered handlers (`resolve_used_update_types()`), so a new handler type (e.g. `inline_query`) is received automatically after a restart.
+- **Limits:** 4096 characters per message, 64 bytes of callback data, about 1 message per second per chat and 30 per second overall. Paginate long lists; throttle broadcasts.
+- **Privacy:** store only what features need, keyed by the Telegram user id; users can block the bot at any time (`TelegramForbiddenError` when sending).
+
+## How to
+
+### Add a feature (example: `reminders`)
+
+1. **Migration** `app/db/migrations/NNN_create_reminders.sql` (see below).
+2. **Feature folder** `app/features/reminders/`:
+   - `models.py` — `@dataclass(frozen=True, slots=True)` domain types.
+   - `repository.py` — class taking `aiosqlite.Connection`; SQL only; row → dataclass mapping.
+   - `service.py` — class taking the repository; rules and limits; raises `ValidationError` / `NotFoundError`.
+   - `texts.py` — reply texts; quote user values with `html.quote()`.
+   - `keyboards.py` — `CallbackData` classes (short `prefix`) and keyboard builders, if the feature has buttons.
+   - `states.py` — a `StatesGroup`, if a command needs several messages.
+   - `handlers.py` — `COMMANDS`, `create_router()` registering every handler, and the handlers.
+3. **Wire** it in `app/bot.py`: add the service to `Dispatcher(...)` (e.g. `reminders=RemindersService(RemindersRepository(db))`), include `reminders.create_router()` after `common` and before the fallback router, and add its `COMMANDS` to `BOT_COMMANDS`.
+4. **Help:** list the new commands in `HELP` (`app/features/common/texts.py`); `tests/test_common_bot.py` fails when `/help` misses a command of the menu.
+5. **Tests:** `tests/test_reminders_service.py` (rules, with the `db` fixture) and `tests/test_reminders_bot.py` (conversations with the `chat` fixture).
+
+The notes feature is the reference for every layer: `app/features/notes/`, `app/db/migrations/001_create_notes.sql`, `tests/test_notes_service.py`, `tests/test_notes_bot.py`. When it is no longer useful, delete the folder and its tests, remove it from `app/bot.py` and `HELP`, and add a migration that drops the `notes` table.
+
+### Add a command to an existing feature
+
+Text in `texts.py` → service method (+ repository method if SQL is needed) → handler in `handlers.py` registered in `create_router()` with `Command("name")` → entry in `COMMANDS` and `HELP` → service test and conversation test.
+
+### Add a multi-step conversation
+
+Add a state to `states.py`; the first handler calls `await state.set_state(Form.step)` and asks a question; a handler registered with `Form.step, F.text, ~F.text.startswith("/")` receives the answer, stores partial data with `await state.update_data(...)` if needed, and finishes with `await state.clear()`. `/cancel` already clears every state.
+
+### Add inline buttons
+
+Define `class ThingCallback(CallbackData, prefix="thing")` with typed fields in `keyboards.py`, build the markup with `InlineKeyboardBuilder`, and register `router.callback_query.register(handler, ThingCallback.filter(F.action == ...))`. The handler receives `callback: CallbackQuery` and `callback_data: ThingCallback`, edits the message when the view changes (`callback.message.edit_text(...)` — Telegram rejects edits that change nothing) and always ends with `await callback.answer(...)`.
+
+### Add a migration
+
+- Create `app/db/migrations/NNN_snake_case.sql` with the next free number (`002_add_due_date.sql`). Numbers must be unique; files run in numeric order, each in its own transaction, and are recorded in `schema_migrations`.
+- Never edit, rename or delete a migration that may have run anywhere; write a new one.
+- Use `STRICT` tables, `INTEGER PRIMARY KEY` ids, `snake_case` columns, `user_id INTEGER` for Telegram ids, ISO 8601 UTC timestamps as `TEXT` (default `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`), `CHECK` constraints for invariants, `REFERENCES … ON DELETE …` for relations (foreign keys are on).
+- Migrations run on start (`dev`, `start`) and with `uv run poe migrate`; tests run them on `:memory:`.
+
+### Add a middleware
+
+For cross-cutting concerns (throttling, loading the user's profile, metrics) write a `BaseMiddleware` subclass in `app/middlewares/` and register it in `create_dispatcher()`, e.g. `dispatcher.message.middleware(ThrottlingMiddleware())` (inner, per handler) or `dispatcher.update.outer_middleware(...)` (every update). Data it puts into `data["key"]` reaches handlers as parameter `key`.
+
+### Call a Bot API method the playground does not know
+
+The playground emulates the methods the example needs (send, edit and delete messages, callback answers, reply keyboards…). When a handler calls another method (`send_photo`, `send_document`, …), the playground shows an error and tests raise `UnsupportedMethodError`. Add a `case` to `PlaygroundChat._handle_api_call` in `app/playground/chat.py` that records the call and returns what Telegram would return, and a test in `tests/test_playground.py`.
+
+## Testing
+
+- `uv run poe test` runs pytest (`asyncio_mode = "auto"`: write `async def test_…` directly). Warnings fail the run.
+- Fixtures (`tests/conftest.py`): `settings` (never read from `.env`), `db` (migrated in-memory SQLite), `dispatcher` (the real one), `chat` (`PlaygroundChat`: `await chat.send("/add Milk")`, `await chat.press(message_id, callback_data)`, `chat.last_bot_message.text` / `.plain_text` / `.reply_markup`, returned notices for callback answers). Environment variables are cleared for every test.
+- **Service tests** exercise rules with a real in-memory database; **conversation tests** go through the dispatcher like Telegram would, so routing, filters, FSM, texts and keyboards are covered; **HTTP tests** use `aiohttp.test_utils.TestClient`.
+- Every new feature or bug fix gets tests in the layer where the logic lives, plus a conversation test for the user-visible flow.
+
+## Definition of done
+
+1. `uv run poe check` passes with **zero** errors and warnings (Ruff lint, Ruff format, mypy strict, pytest){% if choices.docker == "full" %} — run it as `docker compose run --rm dev uv run poe check`{% endif %}.
+2. The flow works in the playground (`{% if choices.docker == "full" %}docker compose up dev{% else %}uv run poe dev{% endif %}`, http://localhost:{{ ports.PLAYGROUND_PORT }}){% if choices.docker != "none" %}, and `docker compose build app` still builds when `Dockerfile`, dependencies or runtime files changed{% endif %}.
+3. New behaviour is covered by tests; new commands are in `COMMANDS` and `HELP`.
+4. Docs match the code: `.env.example`, `README.md`{% if options.spec_md %}, `SPEC.md`{% endif %} and this file are updated when commands, env keys, structure or rules change.
+
+## Conventions
+
+- Type hints everywhere; mypy runs in strict mode. No `Any` unless an API forces it, no `# type: ignore` without an error code and a reason, no `cast` to silence real problems: narrow with `isinstance` / `is None` checks (e.g. `message.from_user` may be `None`).
+- Python 3.14 syntax: `X | None`, built-in generics, `match`, `StrEnum`, type parameter syntax (`def f[T](...)`).
+- Async all the way: never block the event loop (no `time.sleep`, no synchronous HTTP or file-heavy work in handlers); use `asyncio`, `aiosqlite`, `aiohttp`.
+- Naming: modules and functions `snake_case`, classes `PascalCase`, constants `UPPER_CASE`; one folder per feature with the same file names as `notes/`; SQL `snake_case`.
+- Absolute imports from `app.` everywhere.
+- Logging through `logging.getLogger(__name__)` with `%s` arguments (not f-strings); never log secrets or whole updates with personal data at INFO.
+- Dependencies: prefer the standard library and what aiogram already brings (aiohttp, pydantic); add a package with `uv add` only when it clearly pays off, and commit `uv.lock`.
+- Let Ruff format (`uv run poe fix`); do not disable rules to get green.
+- Write code, comments, bot texts and docs in English unless `SPEC.md` asks for other languages.
+{% if choices.docker != "none" %}
+## Docker
+
+{% if choices.docker == "full" -%}
+Mode: **everything in Docker**. `docker-compose.yml` has two services:
+
+- `dev` (profile `dev`, stage `dev` of `Dockerfile`): mounts the project folder at `/app`, keeps `.venv` in the named volume `venv`, runs as user `app`, publishes `PLAYGROUND_PORT` and sets `PLAYGROUND_HOST=0.0.0.0`. It reads `.env` from the mounted folder (no `env_file`), so `.env` edits restart the bot like on the host. `docker compose up dev` runs `uv run poe dev`; `docker compose run --rm dev uv …` runs anything else. After changing dependencies run `docker compose run --rm dev uv sync`.
+- `app`: the production image (see below), `docker compose up --build app`.
+{%- else -%}
+Mode: **Docker to run the app**. Development happens on the host with uv (`uv run poe dev`); Docker builds and runs the bot's production container.
+{%- endif %}
+
+- `Dockerfile` (multi-stage, `python:3.14-slim`, uv from `ghcr.io/astral-sh/uv`): installs the locked production dependencies (`uv sync --locked --no-dev`), then the runtime image copies `.venv` and `app/` and runs `python -m app run` as the non-root user `app`. `.env` is never copied into the image.
+- `docker-compose.yml` passes `.env` to the `app` service (`env_file`), forces `APP_HOST=0.0.0.0`, publishes `APP_PORT` (health check and webhook) and restarts the bot unless stopped. `COMPOSE_PROJECT_NAME` ({{ project.slug }}) names the stack.
+- **Data:** `DOCKER_DATA` in `.env` decides where containers keep the SQLite files (`/app/data`): {% if choices.data == "local" %}**`./data`** — the project's `data/` folder is mounted (current setting); set `DOCKER_DATA=data` to use a Docker volume instead.{% else %}**`data`** — the named volume `{{ project.slug }}_data` (current setting); `docker compose down -v` deletes it. Set `DOCKER_DATA=./data` to keep the files in the project's `data/` folder instead.{% endif %}
+- Commands: `docker compose up --build{% if choices.docker == "full" %} app{% endif %}`, `docker compose{% if choices.docker == "full" %} --profile dev{% endif %} logs -f`, `docker compose{% if choices.docker == "full" %} --profile dev{% endif %} down` (add `-v` to delete the volumes).
+- The runtime image contains only `.venv` and `app/`. When the bot needs more files at runtime, add `COPY` lines to `Dockerfile` (and check `.dockerignore`). Runtime dependencies must be in `[project] dependencies`, not in the `dev` group.
+{% endif %}
+---
+
+Bootstrapped from `{{ skeleton.id }} {{ skeleton.version }}`.

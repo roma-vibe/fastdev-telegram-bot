@@ -1,0 +1,87 @@
+# {{ project.name }} — Specification
+
+Status: draft · Created {{ project.created_at }}
+
+<!--
+Agents: this is the product specification and the source of truth for what the bot does.
+Complete it from the initial brief before implementing features: ask the owner about anything
+unclear, replace every guidance comment with real content, delete sections that do not apply,
+and keep the document current as decisions are made.
+-->
+
+## Initial brief
+
+{% if project.brief | trim %}{{ project.brief | trim }}{% else %}_No brief was given. Ask the owner what this bot should do and record the answer here._{% endif %}
+
+## Goals
+
+<!-- 3–5 outcomes that define success. Why does this bot exist, and how will we know it works? -->
+
+## Users and access
+
+<!--
+Who talks to the bot (roles or personas) and what they need to get done. Who may use it: everyone,
+an allow-list of Telegram user ids, members of a group or channel? Are there admins with extra
+commands? Is the bot used in private chats only, or also in groups (privacy mode, mentions)?
+-->
+
+## Scope
+
+### In scope
+
+<!-- Capabilities of the first release. -->
+
+### Out of scope
+
+<!-- What is explicitly excluded for now, to keep the first release small. -->
+
+## Commands and conversations
+
+<!--
+One subsection per feature: a user story, the commands and buttons involved, the exact
+conversation (what the user sends, what the bot answers), acceptance criteria and edge cases
+(wrong input, /cancel in the middle, pressing an old button, the bot restarted mid-conversation).
+Example:
+
+### Notes
+- As a user I can keep short notes and delete them.
+- /add <text> saves a note (1–500 characters); a bare /add asks for the text; /cancel stops.
+- /notes lists my notes newest first with a ✕ button per note; deleting edits the list.
+- Acceptance: other users never see my notes; at most 20 notes per user.
+-->
+
+## Command menu and texts
+
+<!--
+The command menu (command → description) shown by Telegram, the /start greeting, the /help text,
+the tone of voice and the language(s) of the bot. Formatting rules (HTML), long lists (pagination).
+-->
+
+## Data model
+
+<!-- Entities with fields (type, constraints, defaults) and relations, keyed by the Telegram user id where they belong to a user. Each change becomes a SQL migration in app/db/migrations/. -->
+
+## Integrations and scheduled work
+
+<!-- External APIs, payments, files, notifications the bot sends on its own (reminders, broadcasts) and how often; rate limits to respect. -->
+
+## Non-functional requirements
+
+<!--
+Privacy (which personal data is stored, for how long, how users delete it), security (who can
+use admin commands, secrets), reliability (what happens on restart: FSM state is in memory),
+performance and Telegram limits, logging, backups of the SQLite database, deployment
+({% if choices.docker != "none" %}Docker Compose{% else %}uv on a server{% endif %}, update delivery by {{ env.BOT_MODE }}{% if env.BOT_MODE == "webhook" %} behind an HTTPS reverse proxy{% endif %}).
+-->
+
+## Open questions
+
+<!-- Decisions that need the owner. Remove an item once it is answered and record the answer in the relevant section. -->
+
+- _None yet._
+
+## Milestones
+
+<!-- Small, shippable increments in order. Each one ends with `uv run poe check` passing and the flow tried in the playground. -->
+
+1. _To be defined._

@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1
+
+# uv, the Python package manager, comes from its official image.
+FROM ghcr.io/astral-sh/uv:0.12.21 AS uv
+
+# ---- Build: install the locked production dependencies into /app/.venv ----
+FROM python:3.14-slim AS build
+COPY --from=uv /uv /bin/uv
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
+WORKDIR /app
+COPY pyproject.toml uv.lock .python-version ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev
+
+{% if choices.docker == "full" -%}
+# ---- Development: `docker compose up dev`; sources are mounted, .venv lives in a volume ----
+FROM python:3.14-slim AS dev
+COPY --from=uv /uv /bin/uv
+ENV UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PYTHONUNBUFFERED=1
+RUN groupadd --gid 1000 app && useradd --uid 1000 --gid app --create-home app
+WORKDIR /app
+# Volumes mounted on these folders take their ownership, so uv can write as user app.
+RUN mkdir -p .venv data && chown -R app:app /app
+USER app
+CMD ["uv", "run", "poe", "dev"]
+
+{% endif -%}
+# ---- Runtime: the virtual environment and the app package, run by a non-root user ----
+FROM python:3.14-slim
+ENV PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH"
+RUN groupadd --gid 1000 app && useradd --uid 1000 --gid app --no-create-home app
+WORKDIR /app
+COPY --from=build /app/.venv .venv
+COPY app app
+RUN mkdir -p data && chown app:app data
+USER app
+CMD ["python", "-m", "app", "run"]

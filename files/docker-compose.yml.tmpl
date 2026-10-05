@@ -1,0 +1,59 @@
+# Uses the project's .env: COMPOSE_PROJECT_NAME names the stack, DOCKER_DATA selects where the
+# SQLite database lives ("data" = named volume, "./data" = the project folder), the other keys
+# configure the bot.
+{%- if choices.docker == "full" %}
+# Everything runs in containers: `docker compose up dev` for development (playground + polling,
+# restarting on changes), `docker compose run --rm dev uv run poe <task>` for any task,
+# `docker compose up --build app` for the production container.
+{%- endif %}
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      # Listen on all interfaces inside the container.
+      APP_HOST: 0.0.0.0
+    ports:
+      # GET /health, and the webhook endpoint when BOT_MODE=webhook.
+      - '${APP_PORT:-8080}:${APP_PORT:-8080}'
+    volumes:
+      # SQLite files (DB_PATH=data/...): named volume or the project's data/ folder.
+      - ${DOCKER_DATA:-data}:/app/data
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('APP_PORT', '8080') + '/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+{%- if choices.docker == "full" %}
+
+  dev:
+    profiles: ['dev']
+    build:
+      context: .
+      target: dev
+    # No env_file: the bot reads .env from the mounted folder, so edits apply on the next restart.
+    environment:
+      # Listen on all interfaces inside the container so the published port works.
+      PLAYGROUND_HOST: 0.0.0.0
+    ports:
+      - '${PLAYGROUND_PORT:-8090}:${PLAYGROUND_PORT:-8090}'
+    volumes:
+      # Sources from the project folder; the virtual environment stays in a volume (Linux build).
+      - .:/app
+      - venv:/app/.venv
+      - ${DOCKER_DATA:-data}:/app/data
+{%- endif %}
+
+volumes:
+  data:
+{%- if choices.docker == "full" %}
+  venv:
+{%- endif %}

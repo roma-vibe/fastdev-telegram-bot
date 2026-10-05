@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Tool caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment (keep .env.example in Git)
+.env
+.env.*
+!.env.example
+
+# SQLite databases
+data/*.sqlite
+data/*.sqlite-*
+data/*.db
+
+# Logs and OS / editor files
+*.log
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

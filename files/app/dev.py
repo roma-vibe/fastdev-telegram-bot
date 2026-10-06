@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
-import shlex
+import signal
+import subprocess
 import sys
+import threading
 from contextlib import suppress
 from pathlib import Path
 
@@ -27,7 +29,7 @@ APP_DIR = ROOT_DIR / "app"
 def run_with_reload() -> None:
     """Runs `python -m app dev --no-reload` and restarts it when `app/` or `.env` change."""
     # watchfiles is a dev dependency: imported here so production never needs it.
-    from watchfiles import Change, DefaultFilter, run_process
+    from watchfiles import Change, DefaultFilter, watch
 
     class _Filter(DefaultFilter):
         def __call__(self, change: Change, path: str) -> bool:
@@ -35,15 +37,34 @@ def run_with_reload() -> None:
             watched = file == ENV_FILE or APP_DIR in file.parents
             return watched and super().__call__(change, path)
 
-    def _report(changes: set[tuple[Change, str]]) -> None:
-        files = sorted({str(Path(path).relative_to(ROOT_DIR)) for _, path in changes})
-        logger.info("Restarting: %s changed", ", ".join(files))
+    # A stop often arrives as several signals (fastDev signals the whole process group, uv and
+    # Poe forward them again): the first one ends the watch, the others are ignored.
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda _signum, _frame: stop.set())
 
-    logging.getLogger("watchfiles").setLevel(logging.WARNING)  # `_report` says what changed
-    command = shlex.join([sys.executable, "-m", "app", "dev", "--no-reload"])
-    run_process(
-        ROOT_DIR, target=command, target_type="command", watch_filter=_Filter(), callback=_report
-    )
+    logging.getLogger("watchfiles").setLevel(logging.WARNING)  # the log line below is enough
+    command = [sys.executable, "-m", "app", "dev", "--no-reload"]
+    server = subprocess.Popen(command)
+    try:
+        for changes in watch(ROOT_DIR, watch_filter=_Filter(), stop_event=stop):
+            files = sorted({str(Path(path).relative_to(ROOT_DIR)) for _, path in changes})
+            logger.info("Restarting: %s changed", ", ".join(files))
+            _stop_server(server)
+            server = subprocess.Popen(command)
+    finally:
+        _stop_server(server)
+
+
+def _stop_server(server: subprocess.Popen[bytes]) -> None:
+    """Stops the server like Ctrl+C does and waits for it; kills it if it hangs."""
+    if server.poll() is None:
+        server.send_signal(signal.SIGINT)
+    try:
+        server.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        server.wait()
 
 
 async def serve_dev(settings: Settings) -> None:
@@ -63,6 +84,10 @@ async def serve_dev(settings: Settings) -> None:
                 await wait_for_stop_signal()
             finally:
                 if polling is not None:
+                    # stop_polling() also ends the request in flight; a bare cancel() would
+                    # leave it running against a closed session.
+                    with suppress(RuntimeError):  # polling has not started (yet)
+                        await dispatcher.stop_polling()
                     polling.cancel()
                     with suppress(asyncio.CancelledError):
                         await polling

@@ -1,12 +1,14 @@
-"""The bot's HTTP server: health check and webhook endpoint."""
+"""The bot's HTTP server: health check, webhook endpoint and stop signals."""
 
 import asyncio
+import os
+import signal
 
 from aiogram import Dispatcher
 from aiohttp.test_utils import TestClient, TestServer
 
 from app.playground.chat import PlaygroundChat
-from app.web import create_web_app
+from app.web import create_web_app, wait_for_stop_signal
 from tests.helpers import make_settings
 
 SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
@@ -56,3 +58,15 @@ async def test_webhook_feeds_updates_to_the_dispatcher(
     assert rejected.status == 401
     assert accepted.status == 200
     assert "What I can do" in chat.last_bot_message.text
+
+
+async def test_repeated_stop_signals_do_not_interrupt_the_shutdown() -> None:
+    waiting = asyncio.create_task(wait_for_stop_signal())
+    await asyncio.sleep(0)  # the task installs its signal handlers
+
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.wait_for(waiting, timeout=1)
+    # fastDev, uv and Poe may each send a signal: the later ones must be absorbed, not raise
+    # KeyboardInterrupt in the middle of the shutdown.
+    os.kill(os.getpid(), signal.SIGINT)
+    await asyncio.sleep(0.05)

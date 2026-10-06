@@ -39,7 +39,7 @@ Versions are the `vX.Y.Z` tags of this repository and never change once publishe
 - The **notes** example through every layer: SQL migration → repository → service (rules and limits) → handlers with a command, a two-step FSM conversation, inline delete buttons with `CallbackData` → texts with safe HTML quoting.
 - A **playground**: `dev` serves a chat page (`PLAYGROUND_PORT`) that feeds updates into the real dispatcher and emulates the Bot API, so the bot can be tried without a token or Internet; tests use the same `PlaygroundChat`.
 - Production entry point with long polling or webhook (secret token, allowed updates from the handlers), `/health`, graceful shutdown on SIGTERM, optional self-hosted Bot API server (`TELEGRAM_API_URL`).
-- 48 tests (config, migrations, service, conversations, webhook, playground, dev mode), `uv run poe check` green with zero warnings.
+- 49 tests (config, migrations, service, conversations, webhook, stop signals, playground, dev mode), `uv run poe check` green with zero warnings.
 - `AGENTS.md` (architecture rules, how to add features, commands, conventions, Telegram specifics), `SPEC.md` for the bot's specification, `README.md` for people.
 - Free ports (`APP_PORT`, `PLAYGROUND_PORT`), a generated `WEBHOOK_SECRET`, the project name in `.env` and `pyproject.toml`.
 
@@ -60,4 +60,4 @@ Setup: `uv sync --locked` (host) or `docker compose run --rm dev uv sync --locke
 
 ## Verification
 
-`[verify]` runs `check` for the defaults (`full`, `volume`, `polling`) and for `full` + `local` + `webhook`, `run` + `webhook` and `none`. Host variants need uv on the login PATH.
+`[verify]` runs `check` and `docker-build` (Docker modes only) for the defaults (`full`, `volume`, `polling`) and for `full` + `local` + `webhook`, `run` + `webhook` and `none`. Host variants need uv on the login PATH.

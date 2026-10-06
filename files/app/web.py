@@ -52,14 +52,14 @@ async def serve(app: web.Application, host: str, port: int) -> AsyncIterator[Non
 
 
 async def wait_for_stop_signal() -> None:
-    """Returns on SIGINT (Ctrl+C) or SIGTERM (`docker stop`, fastDev Stop)."""
+    """Returns on SIGINT (Ctrl+C) or SIGTERM (`docker stop`, fastDev Stop).
+
+    The handlers stay until the event loop closes: a stop often arrives as several signals
+    (fastDev signals the whole process group, uv and Poe forward them again), and the repeated
+    ones must not interrupt the shutdown.
+    """
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
-    signals = (signal.SIGINT, signal.SIGTERM)
-    for sig in signals:
+    for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
-    try:
-        await stop.wait()
-    finally:
-        for sig in signals:
-            loop.remove_signal_handler(sig)
+    await stop.wait()
